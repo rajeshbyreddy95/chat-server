@@ -8,7 +8,7 @@ const nodemailer = require('nodemailer');
 const otpStore = {};
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // or your provider (e.g., SendGrid, Outlook)
+  service: 'gmail', 
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
