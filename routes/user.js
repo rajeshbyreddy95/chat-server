@@ -4,6 +4,7 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const authenticateToken = require("../middleware/auth");
 const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs')
 
 const otpStore = {};
 
