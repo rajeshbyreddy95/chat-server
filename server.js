@@ -1,41 +1,52 @@
-const dotenv = require('dotenv');
-dotenv.config()
-const express = require("express")
-const mongoose = require("mongoose")
+require('dotenv').config();
+const express = require('express');
+const mongoose = require('mongoose');
 const http = require('http');
 const socketIo = require('socket.io');
+const cors = require('cors');
+
+// Routes
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/user');
+const msgRoutes = require('./routes/messages');
+
+// Config
+const connectDB = require('./config/db');
 const chatSocketHandler = require('./sockets/chat');
 
-const cors = require('cors');
-const authRoutes = require('./routes/auth')
-const userRoutes = require('./routes/user')
-const msgRoutes = require('./routes/messages')
-const connectDB = require('./config/db');
-
-const app = express()
-app.use(cors());
-app.use(express.json());
-connectDB()
-const port = process.env.PORT||6060
+// Express App & Server
+const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: '*', // Adjust for production
-  },
+    origin: '*', // ✅ Adjust this in production to match your frontend origin
+    methods: ['GET', 'POST', 'PATCH']
+  }
 });
 
+// Database Connection
+connectDB();
 
+// Middlewares
+app.use(cors());
+app.use(express.json());
 
-app.use('/user', authRoutes);
-app.use('/users', userRoutes)
-app.use('/messages', msgRoutes)
-chatSocketHandler(io);
+// ✅ Attach io BEFORE the routes so `req.io` works inside them
 app.use((req, res, next) => {
-  req.io = io; // 👈 Attach io to req
+  req.io = io;
   next();
 });
 
-server.listen(port, ()=>{
-    console.log('server running under port ', port);
-    
-})
+// API Routes
+app.use('/user', authRoutes);
+app.use('/users', userRoutes);
+app.use('/messages', msgRoutes);
+
+// Socket.IO Events
+chatSocketHandler(io);
+
+// Server Listen
+const PORT = process.env.PORT || 6060;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
