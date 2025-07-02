@@ -1,21 +1,24 @@
-const Message = require('../models/Message');
-const User = require('../models/User');
+const Message = require('../models/Message'); // Only require once
 
-const userSocketMap = new Map(); // username -> socketId
+const onlineUsers = new Set();
+const userSocketMap = new Map(); // userId -> socketId
 
 module.exports = (io) => {
   io.on('connection', (socket) => {
-    console.log('New client connected:', socket.id);
+    console.log('🟢 New client connected:', socket.id);
 
-    // User joins
-    socket.on('join', async (username) => {
-      socket.username = username;
-      socket.join(username);
-      userSocketMap.set(username, socket.id);
-      console.log(`User ${username} joined`);
+    // Join user
+    socket.on('join', (userId) => {
+      socket.userId = userId;
+      socket.join(userId);
+      onlineUsers.add(userId);
+      userSocketMap.set(userId, socket.id);
+
+      console.log(`👤 User ${userId} joined`);
+      io.emit('updateOnlineUsers', Array.from(onlineUsers));
     });
 
-    // Send message (group or private)
+    // Send message (personal or group)
     socket.on('sendMessage', async (message) => {
       try {
         const savedMsg = await Message.create({
@@ -30,89 +33,115 @@ module.exports = (io) => {
           const group = await Group.findById(message.groupId).populate('members');
           if (!group) return;
 
-          group.members.forEach((member) => {
+          for (const member of group.members) {
             const memberId = member._id.toString();
             if (memberId !== message.sender) {
-              const memberSocketId = userSocketMap.get(member.username);
+              const memberSocketId = userSocketMap.get(memberId);
               if (memberSocketId) {
-                io.to(memberSocketId).emit('receiveMessage', { ...savedMsg._doc, tempId: message.tempId });
-                io.to(senderSocketId).emit('delivered', { messageId: savedMsg._id, tempId: message.tempId });
+                io.to(memberSocketId).emit('receiveMessage', savedMsg);
               }
             }
-          });
+          }
 
+          // Acknowledge sender
           if (senderSocketId) {
-            io.to(senderSocketId).emit('messageSentAck', { ...savedMsg._doc, tempId: message.tempId });
+            io.to(senderSocketId).emit('messageSentAck', savedMsg);
           }
         } else {
+          // Personal message
           const receiverSocketId = userSocketMap.get(message.receiver);
           if (receiverSocketId) {
-            io.to(receiverSocketId).emit('receiveMessage', { ...savedMsg._doc, tempId: message.tempId });
-            io.to(senderSocketId).emit('delivered', { messageId: savedMsg._id, tempId: message.tempId });
+            io.to(receiverSocketId).emit('receiveMessage', savedMsg);
+            io.to(senderSocketId).emit('delivered', { messageId: savedMsg._id });
           }
 
           if (senderSocketId) {
-            io.to(senderSocketId).emit('messageSentAck', { ...savedMsg._doc, tempId: message.tempId });
+            io.to(senderSocketId).emit('messageSentAck', savedMsg);
           }
         }
       } catch (err) {
-        console.error('Error sending message:', err);
+        console.error('❌ Error sending message:', err);
       }
     });
 
-    // Message delivered
+    // Mark as delivered
     socket.on('delivered', async ({ messageId, receiver }) => {
       try {
         await Message.findByIdAndUpdate(messageId, { isDelivered: true });
+
         const receiverSocketId = userSocketMap.get(receiver);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit('delivered', { messageId });
         }
       } catch (err) {
-        console.error('Error in delivered handler:', err);
+        console.error('❌ Error in delivered handler:', err);
       }
     });
 
-    // Message read
+    // Mark as read
     socket.on('messageRead', async ({ messageId, sender }) => {
       try {
         await Message.findByIdAndUpdate(messageId, { isRead: true });
+
         const senderSocketId = userSocketMap.get(sender);
         if (senderSocketId) {
           io.to(senderSocketId).emit('read', { messageId });
         }
       } catch (err) {
-        console.error('Error in messageRead handler:', err);
+        console.error('❌ Error in messageRead handler:', err);
       }
     });
 
-    // Typing indicator
-    socket.on('typing', ({ to, from, groupId }) => {
-      if (groupId) {
-        Group.findById(groupId).then((group) => {
-          group.members.forEach((member) => {
+    // ✅ Typing indicator (Group or Personal)
+    socket.on('typing', async ({ to, from, groupId }) => {
+      try {
+        if (groupId) {
+          const group = await Group.findById(groupId).populate('members');
+          if (!group) return;
+
+          for (const member of group.members) {
             const memberId = member._id.toString();
             if (memberId !== from) {
-              const memberSocketId = userSocketMap.get(member.username);
+              const memberSocketId = userSocketMap.get(memberId);
               if (memberSocketId) {
                 io.to(memberSocketId).emit('typing', { from, groupId });
               }
             }
-          });
-        });
-      } else {
-        const receiverSocketId = userSocketMap.get(to);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit('typing', { from });
+          }
+        } else if (to) {
+          const receiverSocketId = userSocketMap.get(to);
+          if (receiverSocketId) {
+            io.to(receiverSocketId).emit('typing', { from });
+          }
         }
+      } catch (err) {
+        console.error('❌ Error in typing handler:', err);
       }
     });
 
-    // Stop typing
-    socket.on('stopTyping', ({ to, from }) => {
-      const receiverSocketId = userSocketMap.get(to);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit('stopTyping', { from });
+    // ✅ Stop typing
+    socket.on('stopTyping', ({ to, from, groupId }) => {
+      if (groupId) {
+        Group.findById(groupId).populate('members').then((group) => {
+          if (!group) return;
+
+          group.members.forEach((member) => {
+            const memberId = member._id.toString();
+            if (memberId !== from) {
+              const memberSocketId = userSocketMap.get(memberId);
+              if (memberSocketId) {
+                io.to(memberSocketId).emit('stopTyping', { from, groupId });
+              }
+            }
+          });
+        }).catch((err) => {
+          console.error('❌ Error in stopTyping (group):', err);
+        });
+      } else if (to) {
+        const receiverSocketId = userSocketMap.get(to);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit('stopTyping', { from });
+        }
       }
     });
 
@@ -124,11 +153,13 @@ module.exports = (io) => {
       }
     });
 
-    // Disconnect
-    socket.on('disconnect', async () => {
-      if (socket.username) {
-        userSocketMap.delete(socket.username);
-        console.log(`User ${socket.username} disconnected`);
+    // On disconnect
+    socket.on('disconnect', () => {
+      if (socket.userId) {
+        onlineUsers.delete(socket.userId);
+        userSocketMap.delete(socket.userId);
+        io.emit('updateOnlineUsers', Array.from(onlineUsers));
+        console.log(`🔴 User ${socket.userId} disconnected`);
       }
     });
   });
